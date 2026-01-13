@@ -4,14 +4,20 @@ import pandas as pd
 from datetime import datetime
 import time
 import requests
+from zoneinfo import ZoneInfo  # 新增：时区支持（Python标准库，无需额外安装）
 
 st.set_page_config(page_title="A股涨停监控+潜在候选", layout="wide")
-st.title("🇨🇳 A股涨停板监控 & 当天潜在涨停检测（资金分析版） - 在线版（支持2秒刷新+筛选）")
+st.title("🇨🇳 A股涨停板监控 & 当天潜在涨停检测（资金分析版） - 在线版（北京时间修复）")
+
+# 北京时间设置
+beijing_tz = ZoneInfo("Asia/Shanghai")
+now_beijing = datetime.now(beijing_tz)
+today = now_beijing.strftime("%Y%m%d")  # 正确当日日期
 
 # 侧边栏设置
 st.sidebar.header("通用设置")
 auto_refresh = st.sidebar.checkbox("自动刷新（交易时段推荐）", value=True)
-refresh_interval = st.sidebar.slider("刷新间隔（秒，建议10+防限流/卡顿，2秒可试）", 2, 120, 10)  # 支持2秒
+refresh_interval = st.sidebar.slider("刷新间隔（秒，建议10+防限流，2秒可试）", 2, 120, 10)
 
 st.sidebar.header("潜在涨停筛选条件（可调）")
 min_rise = st.sidebar.slider("最低涨幅 (%)", 0.0, 9.9, 4.0)
@@ -20,7 +26,6 @@ min_main_inflow = st.sidebar.number_input("最低主力净流入-净额 (万)", 
 min_turnover = st.sidebar.slider("最低换手率 (%)", 0.0, 50.0, 5.0)
 max_market_cap = st.sidebar.number_input("最高流通市值 (亿)", 10, 1000, 150) * 100000000
 
-# 新增：全局搜索筛选（适用于涨停板和潜在候选）
 st.sidebar.header("实时筛选搜索")
 search_keyword = st.sidebar.text_input("搜索代码/名称/行业（模糊匹配，支持多个关键词空格分隔）", "")
 
@@ -33,7 +38,6 @@ if 'last_potential_codes' not in st.session_state:
 if 'last_zt_codes' not in st.session_state:
     st.session_state.last_zt_codes = set()
 
-today = datetime.now().strftime("%Y%m%d")
 placeholder = st.empty()
 
 def send_weixin(msg):
@@ -44,7 +48,6 @@ def send_weixin(msg):
         except:
             pass
 
-# 筛选函数（支持代码、名称、行业多关键词模糊搜索）
 def filter_df(df, keyword):
     if not keyword.strip():
         return df
@@ -59,8 +62,11 @@ def filter_df(df, keyword):
     return df[mask]
 
 while True:
+    # 每次循环刷新北京时间
+    now_beijing = datetime.now(beijing_tz)
+
     with placeholder.container():
-        st.subheader(f"更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
+        st.subheader(f"更新时间: {now_beijing.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
 
         col1, col2 = st.columns(2)
 
@@ -70,7 +76,6 @@ while True:
                 zt_df = ak.stock_zt_pool_em(date=today)
                 if not zt_df.empty:
                     zt_df = zt_df.sort_values(by='涨停时间', ascending=True) if '涨停时间' in zt_df.columns else zt_df
-                    # 应用筛选
                     zt_df_filtered = filter_df(zt_df, search_keyword)
                     st.dataframe(zt_df_filtered[['代码', '名称', '最新价', '涨停价', '涨停时间', '换手率', '连板数', '所属行业']], use_container_width=True)
 
@@ -83,9 +88,9 @@ while True:
                         send_weixin(f"新涨停 {len(new_zt)} 个:\n{new_zt_stocks.to_string()}")
                     st.session_state.last_zt_codes = current_zt_codes
                 else:
-                    st.info("暂无涨停（非交易日或开盘前）")
+                    st.info("暂无涨停股票（开盘前/尾盘后/非交易日正常，或刚开盘数据延迟）")
             except Exception as e:
-                st.error(f"涨停数据错误: {e}")
+                st.warning(f"涨停数据获取失败（可能数据源延迟或网络波动）: {str(e)} \n建议稍后刷新重试")
 
         with col2:
             st.header("⚡ 潜在涨停候选（主力资金实时筛选）")
@@ -101,10 +106,9 @@ while True:
 
                 if not potential_df.empty:
                     potential_df = potential_df.sort_values(by='主力净流入-净额', ascending=False)
-                    # 应用筛选
                     potential_df_filtered = filter_df(potential_df, search_keyword)
                     display_cols = ['代码', '名称', '最新价', '涨跌幅', '换手率', '主力净流入-净额', '流通市值', '所属行业']
-                    st.dataframe(potential_df_filtered[display_cols].head(50), use_container_width=True)  # 前50条，支持滚动
+                    st.dataframe(potential_df_filtered[display_cols].head(50), use_container_width=True)
 
                     current_codes = set(potential_df['代码'])
                     new_codes = current_codes - st.session_state.last_potential_codes
@@ -115,11 +119,11 @@ while True:
                         send_weixin(f"新潜在候选 {len(new_codes)} 个:\n{new_stocks.to_string()}")
                     st.session_state.last_potential_codes = current_codes
                 else:
-                    st.info("当前无满足条件候选（可调整阈值）")
+                    st.info("当前无满足条件候选（可调整阈值或市场平静）")
             except Exception as e:
-                st.error(f"实时数据错误: {e}")
+                st.warning(f"实时数据获取失败（可能网络或数据源问题）: {str(e)}")
 
-        st.caption("⚠️ 2秒刷新在交易高峰可能卡顿或限流，建议10-30秒。仅供参考，非投资建议！")
+        st.caption("✅ 已修复北京时间和日期问题！交易日9:30-15:00数据最准，仅供参考，非投资建议。")
 
     if not auto_refresh:
         st.stop()
